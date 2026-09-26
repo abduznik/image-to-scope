@@ -314,9 +314,11 @@ def test_command_player_plays_and_stops(tmp_path, monkeypatch):
         def wait(self, timeout=None):
             return 0
 
-    monkeypatch.setattr(backend.subprocess, "Popen", FakeProc)
+    # Create the player first: probing for sounddevice/PortAudio may itself
+    # run subprocesses (ldconfig), which must not hit the fake.
     player = backend.AudioPlayer()
     player._backend = ("command", "aplay")
+    monkeypatch.setattr(backend.subprocess, "Popen", FakeProc)
     player.play(wav)
     assert calls[0][0] == "aplay"
     tmp_copy = calls[0][1]
