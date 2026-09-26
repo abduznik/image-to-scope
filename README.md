@@ -102,7 +102,8 @@ python -m pytest         # GUI tests are skipped if no display is available
 
 To ship a new version, bump `__version__` in `backend.py` and merge to `main`.
 To rebuild and overwrite the current version's release, run the **Release**
-workflow by hand from the Actions tab with **replace** ticked.
+workflow by hand from the Actions tab with **replace** ticked, or push to `main`
+with `[replace-release]` in the commit message.
 
 Build the AppImage locally (Linux) with:
 

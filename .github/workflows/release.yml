@@ -5,7 +5,8 @@ name: Release
 # bump __version__ in backend.py and merge to main.
 #
 # Run it by hand from the Actions tab with "replace" ticked to rebuild and
-# overwrite an existing release of the current version.
+# overwrite an existing release of the current version, or push to main with
+# "[replace-release]" in the commit message.
 on:
   push:
     branches: [main]
@@ -44,7 +45,7 @@ jobs:
       - uses: actions/checkout@v5
       - id: version
         env:
-          REPLACE: ${{ inputs.replace || false }}
+          REPLACE: ${{ inputs.replace || contains(github.event.head_commit.message, '[replace-release]') }}
         run: |
           VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' backend.py)
           if [ -z "$VERSION" ]; then
