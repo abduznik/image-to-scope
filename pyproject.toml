@@ -4,6 +4,9 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# A hung test fails after 2 minutes and dumps every thread's stack.
+timeout = 120
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 100

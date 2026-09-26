@@ -80,6 +80,7 @@ jobs:
     name: Build Windows .exe
     needs: [version, test]
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       ASSET: ImageToScope-${{ needs.version.outputs.tag }}-windows-x64.exe
     steps:
@@ -122,6 +123,7 @@ jobs:
     needs: [version, test]
     # The oldest supported runner, so the AppImage runs on older distros too.
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     env:
       ASSET: ImageToScope-${{ needs.version.outputs.tag }}-linux-x86_64.AppImage
     steps:
@@ -165,6 +167,7 @@ jobs:
           - arch: x86_64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     env:
       ASSET: ImageToScope-${{ needs.version.outputs.tag }}-macos-${{ matrix.arch }}.zip
     steps:
