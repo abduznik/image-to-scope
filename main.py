@@ -119,7 +119,9 @@ def _self_test_gui(history, image, require_gui: bool) -> str:
         app = gui.ScopeApp(root, history=history)
         assert app.load_image(image, auto_process=False)
         app.show_entry(history.entries[0])
-        root.update()
+        # Only idle tasks (layout, drawing): a full update() on a withdrawn
+        # window never returns on macOS.
+        root.update_idletasks()
     finally:
         root.destroy()
     return "OK"

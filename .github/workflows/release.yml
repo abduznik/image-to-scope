@@ -102,6 +102,7 @@ jobs:
           --add-data "assets/icon-256.png;assets"
           main.py
       - name: Smoke test (processing + GUI)
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $p = Start-Process -FilePath dist\ImageToScope.exe -ArgumentList '--self-test','--require-gui' -Wait -PassThru
@@ -149,6 +150,7 @@ jobs:
           mkdir -p release
           packaging/linux/build-appimage.sh "release/$ASSET"
       - name: Smoke test (processing + GUI)
+        timeout-minutes: 5
         run: APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a "release/$ASSET" --self-test --require-gui
       - uses: actions/upload-artifact@v4
         with:
@@ -198,6 +200,7 @@ jobs:
           # Editing Info.plist invalidates the ad-hoc signature; re-sign.
           codesign --force --deep --sign - dist/ImageToScope.app
       - name: Smoke test (processing + GUI)
+        timeout-minutes: 5
         run: dist/ImageToScope.app/Contents/MacOS/ImageToScope --self-test --require-gui
       - name: Package
         run: |
