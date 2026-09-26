@@ -1,12 +1,20 @@
 name: Release
 
-# Publishes a Windows build whenever main carries a version (backend.__version__)
-# that has no GitHub release yet. To ship a new version: bump __version__ in
-# backend.py and merge to main. Can also be started by hand from the Actions tab.
+# Publishes Windows, Linux and macOS builds whenever main carries a version
+# (backend.__version__) that has no GitHub release yet. To ship a new version:
+# bump __version__ in backend.py and merge to main.
+#
+# Run it by hand from the Actions tab with "replace" ticked to rebuild and
+# overwrite an existing release of the current version.
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      replace:
+        description: Delete and re-publish the release if this version already exists
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -15,6 +23,14 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  PYTHON_VERSION: "3.12"
+  # Shared PyInstaller options. PIL._tkinter_finder is needed for images in Tk
+  # and is not picked up automatically.
+  PYINSTALLER_ARGS: >-
+    --noconfirm --clean --windowed --name ImageToScope
+    --hidden-import PIL._tkinter_finder
+
 jobs:
   version:
     name: Check version
@@ -22,10 +38,13 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      released: ${{ steps.version.outputs.released }}
+      build: ${{ steps.version.outputs.build }}
+      replace: ${{ steps.version.outputs.replace }}
     steps:
       - uses: actions/checkout@v5
       - id: version
+        env:
+          REPLACE: ${{ inputs.replace || false }}
         run: |
           VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' backend.py)
           if [ -z "$VERSION" ]; then
@@ -36,30 +55,123 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
-            echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$TAG is already released - nothing to do. Bump __version__ in backend.py to publish a new release."
+            if [ "$REPLACE" = "true" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "replace=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::$TAG exists and will be replaced"
+            else
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              echo "replace=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::$TAG is already released - nothing to do. Bump __version__ in backend.py, or run this workflow by hand with 'replace' ticked."
+            fi
           else
-            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "replace=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Releasing $TAG"
           fi
 
   test:
     name: Test
     needs: version
-    if: needs.version.outputs.released == 'false'
+    if: needs.version.outputs.build == 'true'
     uses: ./.github/workflows/ci.yml
 
-  build-windows:
+  windows:
     name: Build Windows .exe
     needs: [version, test]
     runs-on: windows-latest
     env:
-      EXE_NAME: ImageToScope-${{ needs.version.outputs.tag }}-windows-x64.exe
+      ASSET: ImageToScope-${{ needs.version.outputs.tag }}-windows-x64.exe
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build with PyInstaller
+        shell: bash
+        run: >
+          pyinstaller $PYINSTALLER_ARGS --onefile
+          --icon assets/icon.ico
+          --add-data "assets/icon-256.png;assets"
+          main.py
+      - name: Smoke test (processing + GUI)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\ImageToScope.exe -ArgumentList '--self-test','--require-gui' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+          Write-Host "Self-test passed"
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p release
+          cp dist/ImageToScope.exe "release/$ASSET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release/*
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux AppImage
+    needs: [version, test]
+    # The oldest supported runner, so the AppImage runs on older distros too.
+    runs-on: ubuntu-22.04
+    env:
+      ASSET: ImageToScope-${{ needs.version.outputs.tag }}-linux-x86_64.AppImage
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build with PyInstaller
+        run: >
+          pyinstaller $PYINSTALLER_ARGS
+          --add-data "assets/icon-256.png:assets"
+          main.py
+      - name: Build AppImage
+        run: |
+          mkdir -p release
+          packaging/linux/build-appimage.sh "release/$ASSET"
+      - name: Smoke test (processing + GUI)
+        run: APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a "release/$ASSET" --self-test --require-gui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: release/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS .app (${{ matrix.arch }})
+    needs: [version, test]
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      ASSET: ImageToScope-${{ needs.version.outputs.tag }}-macos-${{ matrix.arch }}.zip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: requirements*.txt
       - name: Install dependencies
@@ -68,52 +180,77 @@ jobs:
           pip install -r requirements.txt pyinstaller
       - name: Build with PyInstaller
         run: >
-          pyinstaller --noconfirm --clean --onefile --windowed
-          --name ImageToScope
+          pyinstaller $PYINSTALLER_ARGS
+          --icon assets/icon.icns
+          --add-data "assets/icon-256.png:assets"
+          --osx-bundle-identifier io.github.abduznik.imagetoscope
           main.py
-      - name: Smoke test the executable
-        shell: pwsh
+      - name: Set bundle version
         run: |
-          $p = Start-Process -FilePath dist\ImageToScope.exe -ArgumentList '--self-test' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
-          Write-Host "Self-test passed"
+          PLIST=dist/ImageToScope.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ needs.version.outputs.version }}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${{ needs.version.outputs.version }}" "$PLIST" \
+            || /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ needs.version.outputs.version }}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Image to Scope" "$PLIST" || true
+          # Editing Info.plist invalidates the ad-hoc signature; re-sign.
+          codesign --force --deep --sign - dist/ImageToScope.app
+      - name: Smoke test (processing + GUI)
+        run: dist/ImageToScope.app/Contents/MacOS/ImageToScope --self-test --require-gui
       - name: Package
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force release | Out-Null
-          Copy-Item dist\ImageToScope.exe "release\$env:EXE_NAME"
-          $hash = (Get-FileHash "release\$env:EXE_NAME" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $env:EXE_NAME" | Out-File -Encoding ascii "release\$env:EXE_NAME.sha256"
-          Get-ChildItem release
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent dist/ImageToScope.app "release/$ASSET"
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
+          name: macos-${{ matrix.arch }}
           path: release/*
           if-no-files-found: error
 
   publish:
     name: Publish GitHub release
-    needs: [version, build-windows]
+    needs: [version, windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: windows-exe
           path: release
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd release
+          sha256sum ImageToScope-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Remove the existing release
+        if: needs.version.outputs.replace == 'true'
+        run: gh release delete "$TAG" --cleanup-tag --yes
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.version.outputs.tag }}
+          tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
-          name: Image to Scope ${{ needs.version.outputs.tag }}
+          name: Image to Scope ${{ env.TAG }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release/*
           body: |
-            Windows build of **Image to Scope** ${{ needs.version.outputs.tag }}.
+            **Image to Scope** ${{ env.TAG }} - no install or Python needed.
 
-            Download `ImageToScope-${{ needs.version.outputs.tag }}-windows-x64.exe` and run it - no install or Python needed.
-            Windows SmartScreen may warn because the app is not code-signed yet: click **More info → Run anyway**.
+            | Platform | Download |
+            |---|---|
+            | Windows 10/11 (64-bit) | `ImageToScope-${{ env.TAG }}-windows-x64.exe` |
+            | Linux (x86_64) | `ImageToScope-${{ env.TAG }}-linux-x86_64.AppImage` |
+            | macOS, Apple Silicon (M1 and later) | `ImageToScope-${{ env.TAG }}-macos-arm64.zip` |
+            | macOS, Intel | `ImageToScope-${{ env.TAG }}-macos-x86_64.zip` |
 
-            The `.sha256` file holds the checksum of the executable.
+            The builds are not code-signed yet, so the first launch needs one extra step:
+
+            - **Windows:** if SmartScreen warns, click **More info → Run anyway**.
+            - **Linux:** `chmod +x ImageToScope-*.AppImage`, then run it. If it complains about FUSE, install `libfuse2` (or run it with `--appimage-extract-and-run`).
+            - **macOS:** unzip and move **ImageToScope.app** to Applications. If macOS says it can't be opened, go to **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/ImageToScope.app`.
+
+            `SHA256SUMS.txt` lists the checksum of every download.

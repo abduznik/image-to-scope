@@ -1,4 +1,5 @@
 import json
+import os
 
 import numpy as np
 import pytest
@@ -290,3 +291,41 @@ def test_audio_player_without_backend_reports_unavailable():
     player.stop()
     with pytest.raises(ScopeError):
         player.play("x.wav")
+
+
+def test_command_player_plays_and_stops(tmp_path, monkeypatch):
+    settings = ScopeSettings(**FAST)
+    wav = tmp_path / "a.wav"
+    backend.write_wav(np.zeros(1000), np.zeros(1000), wav, settings)
+
+    calls = []
+
+    class FakeProc:
+        def __init__(self, args, **kw):
+            calls.append(args)
+            self.done = False
+
+        def poll(self):
+            return 0 if self.done else None
+
+        def terminate(self):
+            self.done = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(backend.subprocess, "Popen", FakeProc)
+    player = backend.AudioPlayer()
+    player._backend = ("command", "aplay")
+    player.play(wav)
+    assert calls[0][0] == "aplay"
+    tmp_copy = calls[0][1]
+    assert sf.info(tmp_copy).subtype == "PCM_16"
+    assert player.is_playing()
+    player.stop()
+    assert not player.is_playing()
+    assert not os.path.exists(tmp_copy)
+
+
+def test_resource_path_finds_bundled_icon():
+    assert backend.resource_path("assets/icon-256.png").is_file()

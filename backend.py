@@ -28,7 +28,9 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field, fields
@@ -362,6 +364,12 @@ def invalid_filename_chars(name: str) -> str:
 
 
 # --------------------------------------------------------------- history --
+def resource_path(relative: str) -> Path:
+    """Path to a bundled file (works from source and from a PyInstaller build)."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / relative
+
+
 def app_data_dir() -> Path:
     override = os.environ.get("IMAGE_TO_SCOPE_HOME")
     if override:
@@ -509,14 +517,19 @@ class AudioPlayer:
     """Plays one WAV at a time, in the background.
 
     Uses `sounddevice` when available (volume control, works everywhere
-    PortAudio does) and falls back to `winsound` on Windows.
+    PortAudio does). Otherwise falls back to `winsound` on Windows, or to a
+    command-line player (pw-play, paplay, aplay, afplay) on Linux and macOS.
     """
+
+    COMMAND_PLAYERS = ("pw-play", "paplay", "aplay", "afplay")
 
     def __init__(self, volume: float = 0.4):
         self.volume = volume
         self.current: str | None = None
         self._lock = threading.Lock()
         self._backend = None
+        self._proc = None
+        self._tmp: str | None = None
         try:
             import sounddevice
             sounddevice.query_devices(kind="output")
@@ -525,6 +538,10 @@ class AudioPlayer:
             if sys.platform == "win32":
                 import winsound
                 self._backend = ("winsound", winsound)
+            else:
+                cmd = next((c for c in self.COMMAND_PLAYERS if shutil.which(c)), None)
+                if cmd:
+                    self._backend = ("command", cmd)
 
     @property
     def available(self) -> bool:
@@ -539,9 +556,18 @@ class AudioPlayer:
             if name == "sounddevice":
                 data, rate = sf.read(str(wav_path), dtype="float32")
                 mod.play(data * self.volume, rate)
-            else:
+            elif name == "winsound":
                 mod.PlaySound(str(wav_path),
                               mod.SND_FILENAME | mod.SND_ASYNC | mod.SND_NODEFAULT)
+            else:
+                # Play a quieter 16-bit copy: the full-scale X-Y signal is harsh.
+                data, rate = sf.read(str(wav_path), dtype="float32")
+                fd, self._tmp = tempfile.mkstemp(suffix=".wav", prefix="scope-play-")
+                os.close(fd)
+                sf.write(self._tmp, data * self.volume, rate, subtype="PCM_16")
+                self._proc = subprocess.Popen(
+                    [mod, self._tmp], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.current = str(wav_path)
 
     def stop(self) -> None:
@@ -552,8 +578,22 @@ class AudioPlayer:
             try:
                 if name == "sounddevice":
                     mod.stop()
-                else:
+                elif name == "winsound":
                     mod.PlaySound(None, 0)
+                else:
+                    if self._proc is not None and self._proc.poll() is None:
+                        self._proc.terminate()
+                        try:
+                            self._proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            self._proc.kill()
+                    self._proc = None
+                    if self._tmp:
+                        try:
+                            os.remove(self._tmp)
+                        except OSError:
+                            pass
+                        self._tmp = None
             finally:
                 self.current = None
 
@@ -566,4 +606,6 @@ class AudioPlayer:
                 return mod.get_stream().active
             except RuntimeError:
                 return False
+        if name == "command":
+            return self._proc is not None and self._proc.poll() is None
         return True  # winsound gives no way to ask; assume until stopped

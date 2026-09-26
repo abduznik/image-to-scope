@@ -135,6 +135,7 @@ class ScopeApp:
         self._card_widgets: dict[str, dict] = {}
 
         root.title(f"{backend.APP_NAME} v{backend.__version__}")
+        self._set_icon()
         root.geometry("1280x800")
         root.minsize(980, 640)
         self._init_style()
@@ -146,6 +147,14 @@ class ScopeApp:
         root.after(POLL_MS, self._poll)
 
     # ---------------------------------------------------------- layout --
+    def _set_icon(self):
+        icon = backend.resource_path("assets/icon-256.png")
+        try:
+            self._icon = ImageTk.PhotoImage(Image.open(icon))
+            self.root.iconphoto(True, self._icon)
+        except (OSError, tk.TclError):
+            pass  # running without the assets folder - keep the default icon
+
     def _init_style(self):
         style = ttk.Style(self.root)
         if sys.platform == "win32" and "vista" in style.theme_names():
@@ -691,7 +700,7 @@ class ScopeApp:
 
 def run(history: HistoryStore | None = None, image: str | None = None) -> None:
     """Create the main window and run the Tk event loop."""
-    root = tk.Tk()
+    root = tk.Tk(className=backend.APP_SLUG)
     app = ScopeApp(root, history=history)
     if image:
         root.after(200, lambda: app.load_image(image))

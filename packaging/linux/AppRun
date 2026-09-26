@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point: start the PyInstaller build bundled in usr/bin.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/ImageToScope/ImageToScope" "$@"

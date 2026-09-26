@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Image to Scope
+GenericName=Oscilloscope Art Generator
+Comment=Turn images into sound that draws them on an oscilloscope
+Exec=ImageToScope %f
+Icon=image-to-scope
+Terminal=false
+Categories=AudioVideo;Audio;Graphics;
+MimeType=image/png;image/jpeg;image/webp;image/svg+xml;image/bmp;image/gif;image/tiff;
+StartupWMClass=ImageToScope

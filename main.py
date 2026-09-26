@@ -32,6 +32,8 @@ def parse_args(argv=None):
                         help="length of the WAV in seconds (--convert only)")
     parser.add_argument("--self-test", action="store_true",
                         help="run a quick end-to-end check and exit")
+    parser.add_argument("--require-gui", action="store_true",
+                        help="with --self-test: fail if the window can't be opened")
     parser.add_argument("--version", action="version",
                         version=f"%(prog)s {backend.__version__}")
     return parser.parse_args(argv)
@@ -57,7 +59,7 @@ def convert(image, output_dir=None, duration=None) -> int:
     return 0
 
 
-def self_test() -> int:
+def self_test(require_gui: bool = False) -> int:
     """Draw a shape, run it through the pipeline and check the outputs.
 
     Used by the release workflow to make sure the frozen .exe actually works.
@@ -88,18 +90,45 @@ def self_test() -> int:
             history = backend.HistoryStore(tmp / "history")
             entry = history.process(src, backend.ScopeSettings(loop_seconds=0.5))
             assert history.wav_path(entry).is_file()
-            import gui  # noqa: F401 - make sure the GUI module is bundled/importable
+            gui_status = _self_test_gui(history, src, require_gui)
         except Exception as exc:
             print(f"self-test FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 1
-    print(f"self-test OK ({backend.APP_NAME} {backend.__version__})")
+    print(f"self-test OK ({backend.APP_NAME} {backend.__version__}, GUI {gui_status})")
     return 0
+
+
+def _self_test_gui(history, image, require_gui: bool) -> str:
+    """Build the real (hidden) main window and show an image in it.
+
+    Catches packaging problems that only appear once Tk and Pillow's Tk
+    bridge are used. Skipped when there is no display, unless required.
+    """
+    import tkinter as tk
+
+    import gui
+
+    try:
+        root = tk.Tk(className=backend.APP_SLUG)
+    except tk.TclError:
+        if require_gui:
+            raise
+        return "skipped (no display)"
+    try:
+        root.withdraw()
+        app = gui.ScopeApp(root, history=history)
+        assert app.load_image(image, auto_process=False)
+        app.show_entry(history.entries[0])
+        root.update()
+    finally:
+        root.destroy()
+    return "OK"
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.self_test:
-        return self_test()
+        return self_test(require_gui=args.require_gui)
     if args.convert:
         return convert(args.convert, args.output_dir, args.duration)
 
