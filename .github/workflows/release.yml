@@ -1,0 +1,119 @@
+name: Release
+
+# Publishes a Windows build whenever main carries a version (backend.__version__)
+# that has no GitHub release yet. To ship a new version: bump __version__ in
+# backend.py and merge to main. Can also be started by hand from the Actions tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      released: ${{ steps.version.outputs.released }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' backend.py)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not read __version__ from backend.py"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG is already released - nothing to do. Bump __version__ in backend.py to publish a new release."
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Releasing $TAG"
+          fi
+
+  test:
+    name: Test
+    needs: version
+    if: needs.version.outputs.released == 'false'
+    uses: ./.github/workflows/ci.yml
+
+  build-windows:
+    name: Build Windows .exe
+    needs: [version, test]
+    runs-on: windows-latest
+    env:
+      EXE_NAME: ImageToScope-${{ needs.version.outputs.tag }}-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build with PyInstaller
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name ImageToScope
+          main.py
+      - name: Smoke test the executable
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\ImageToScope.exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+          Write-Host "Self-test passed"
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist\ImageToScope.exe "release\$env:EXE_NAME"
+          $hash = (Get-FileHash "release\$env:EXE_NAME" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $env:EXE_NAME" | Out-File -Encoding ascii "release\$env:EXE_NAME.sha256"
+          Get-ChildItem release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [version, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Image to Scope ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/*
+          body: |
+            Windows build of **Image to Scope** ${{ needs.version.outputs.tag }}.
+
+            Download `ImageToScope-${{ needs.version.outputs.tag }}-windows-x64.exe` and run it - no install or Python needed.
+            Windows SmartScreen may warn because the app is not code-signed yet: click **More info → Run anyway**.
+
+            The `.sha256` file holds the checksum of the executable.
